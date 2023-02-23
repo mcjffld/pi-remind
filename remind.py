@@ -29,20 +29,16 @@ import time
 
 import httplib2
 import numpy as np
-import oauth2client
 import pytz
 import unicornhat as lights
-from apiclient import discovery
-from dateutil import parser
-from oauth2client import client
-from oauth2client import tools
+from datetime import datetime
 
-try:
-    import argparse
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-    flags = argparse.ArgumentParser(parents=[tools.argparser]).parse_args()
-except ImportError:
-    flags = None
 
 # Google says: If modifying these scopes, delete your previously saved credentials at ~/.credentials/client_secret.json
 # On the pi, it's in /root/.credentials/
@@ -189,27 +185,49 @@ def flash_random(flash_count, delay):
         time.sleep(delay)
 
 
-def get_credentials():
-    # taken from https://developers.google.com/google-apps/calendar/quickstart/python
-    global credentials
-    home_dir = os.path.expanduser('~')
-    credential_dir = os.path.join(home_dir, '.credentials')
-    if not os.path.exists(credential_dir):
-        print('Creating', credential_dir)
-        os.makedirs(credential_dir)
-    credential_path = os.path.join(credential_dir, 'pi_remind.json')
-    store = oauth2client.file.Storage(credential_path)
-    credentials = store.get()
-    if not credentials or credentials.invalid:
-        flow = client.flow_from_clientsecrets(CLIENT_SECRET_FILE, SCOPES)
-        flow.user_agent = APPLICATION_NAME
-        if flags:
-            credentials = tools.run_flow(flow, store, flags)
-        else:  # Needed only for compatibility with Python 2.6
-            credentials = tools.run(flow, store)
-        print('Storing credentials to', credential_path)
-    return credentials
+def init():
 
+    """Shows basic usage of the Google Calendar API.
+    Prints the start and name of the next 10 events on the user's calendar.
+    """
+    creds = None
+    service = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+    if os.path.exists('/root/token.json'):
+        creds = Credentials.from_authorized_user_file('/root/token.json', SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file('/root/credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open('/root/token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    service = build('calendar', 'v3', credentials=creds)
+
+    # Call the Calendar API
+    now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' indicates UTC time
+    print('Getting the upcoming 10 events')
+    events_result = service.events().list(calendarId='primary', timeMin=now,
+                                            maxResults=10, singleEvents=True,
+                                            orderBy='startTime').execute()
+    events = events_result.get('items', [])
+
+    if not events:
+        print('No upcoming events found.')
+        return
+
+    # Prints the start and name of the next 10 events
+    for event in events:
+        start = event['start'].get('dateTime', event['start'].get('date'))
+        print(start, event['summary'])
+
+    return service
 
 def has_reminder(event):
     # Return true if there's a reminder set for the event
@@ -230,7 +248,7 @@ def has_reminder(event):
     return False
 
 
-def get_next_event(search_limit):
+def get_next_event(service, search_limit):
     global has_error
     global reboot_counter
 
@@ -279,7 +297,8 @@ def get_next_event(search_limit):
                 if start:
                     # When does the appointment start?
                     # Convert the string it into a Python dateTime object so we can do math on it
-                    event_start = parser.parse(start)
+                    event_start = datetime.fromisoformat(start)
+                    
                     # does the event start in the future?
                     if current_time < event_start:
                         # only use events that have a reminder set
@@ -323,7 +342,7 @@ def get_next_event(search_limit):
     return None
 
 
-def main():
+def main(service):
     # initialize the lastMinute variable to the current time to start
     last_minute = datetime.datetime.now().minute
     # on startup, just use the previous minute as lastMinute
@@ -342,7 +361,7 @@ def main():
             last_minute = current_minute
             # we've moved a minute, so we have work to do
             # get the next calendar event (within the specified time limit [in minutes])
-            next_event = get_next_event(10)
+            next_event = get_next_event(service, 10)
             # do we get an event?
             if next_event is not None:
                 num_minutes = next_event['num_minutes']
@@ -402,9 +421,9 @@ try:
     # Initialize the Google Calendar API stuff
     print('Initializing the Google Calendar API')
     socket.setdefaulttimeout(10)  # 10 seconds
-    credentials = get_credentials()
-    http = credentials.authorize(httplib2.Http())
-    service = discovery.build('calendar', 'v3', http=http)
+
+    service = init()
+
 except Exception as e:
     print('\nException type:', type(e))
     # not much else we can do here except to skip this attempt and try again later
@@ -421,7 +440,7 @@ print('Application initialized\n')
 # Now see what we're supposed to do next
 if __name__ == '__main__':
     try:
-        main()
+        main(service)
     except KeyboardInterrupt:
         print('\nExiting application\n')
         sys.exit(0)

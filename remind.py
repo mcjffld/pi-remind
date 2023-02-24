@@ -32,6 +32,7 @@ import numpy as np
 import pytz
 import unicornhat as lights
 from datetime import datetime
+from datetime import timedelta
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -42,7 +43,8 @@ from googleapiclient.errors import HttpError
 
 # Google says: If modifying these scopes, delete your previously saved credentials at ~/.credentials/client_secret.json
 # On the pi, it's in /root/.credentials/
-SCOPES = 'https://www.googleapis.com/auth/calendar.readonly'
+SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+
 CLIENT_SECRET_FILE = 'client_secret.json'
 APPLICATION_NAME = 'Pi Reminder'
 CALENDAR_ID = 'primary'
@@ -195,23 +197,30 @@ def init():
     # The file token.json stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first
     # time.
-    if os.path.exists('/root/token.json'):
-        creds = Credentials.from_authorized_user_file('/root/token.json', SCOPES)
+    print("init")
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        print("from_authorized_user_file: " + creds.token)
     # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
+        print("no creds")
         if creds and creds.expired and creds.refresh_token:
+            print("refresh")
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('/root/credentials.json', SCOPES)
+            print("local flow")
+            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+            print("local server")
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-        with open('/root/token.json', 'w') as token:
+        with open('token.json', 'w') as token:
             token.write(creds.to_json())
 
+    print("have service: " + creds.refresh_token)
     service = build('calendar', 'v3', credentials=creds)
 
     # Call the Calendar API
-    now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' indicates UTC time
+    now = datetime.utcnow().isoformat() + 'Z'  # 'Z' indicates UTC time
     print('Getting the upcoming 10 events')
     events_result = service.events().list(calendarId='primary', timeMin=now,
                                             maxResults=10, singleEvents=True,
@@ -254,10 +263,10 @@ def get_next_event(service, search_limit):
 
     # modified from https://developers.google.com/google-apps/calendar/quickstart/python
     # get all of the events on the calendar from now through 10 minutes from now
-    print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Getting next event')
+    print(datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Getting next event')
     # this 'now' is in a different format (UTC)
-    now = datetime.datetime.utcnow()
-    then = now + datetime.timedelta(minutes=search_limit)
+    now = datetime.utcnow()
+    then = now + timedelta(minutes=search_limit)
     # if we don't have an error from the previous attempt, then change the LED color
     # otherwise leave it alone (it should already be red, so it will stay that way).
     if not has_error:
@@ -283,11 +292,11 @@ def get_next_event(service, search_limit):
         # did we get a return value?
         if not event_list:
             # no? Then no upcoming events at all, so nothing to do right now
-            print(datetime.datetime.now(), 'No entries returned')
+            print(datetime.now(), 'No entries returned')
             return None
         else:
             # what time is it now?
-            current_time = pytz.utc.localize(datetime.datetime.utcnow())
+            current_time = pytz.utc.localize(datetime.utcnow())
             # loop through the events in the list
             for event in event_list:
                 # we only care about events that have a start time
@@ -344,17 +353,22 @@ def get_next_event(service, search_limit):
 
 def main(service):
     # initialize the lastMinute variable to the current time to start
-    last_minute = datetime.datetime.now().minute
+    last_minute = datetime.now().minute
     # on startup, just use the previous minute as lastMinute
     if last_minute == 0:
         last_minute = 59
     else:
         last_minute -= 1
 
+    print("main")
     # infinite loop to continuously check Google Calendar for future entries
     while 1:
         # get the current minute
-        current_minute = datetime.datetime.now().minute
+        current_minute = datetime.now().minute
+        current_second = datetime.now().second
+        
+        if current_second % 10 == 0:
+            print(current_second)
         # is it the same minute as the last time we checked?
         if current_minute != last_minute:
             # reset last_minute to the current_minute, of course
@@ -372,19 +386,21 @@ def main(service):
                 # is the appointment between 10 and 5 minutes from now?
                 if num_minutes >= FIRST_THRESHOLD:
                     # Flash the lights in WHITE
-                    flash_all(1, 0.25, WHITE)
+                    flash_all(3, 0.25, WHITE)
                     # set the activity light to WHITE as an indicator
                     set_activity_light(WHITE, False)
                 # is the appointment less than 5 minutes but more than 2 minutes from now?
                 elif num_minutes > SECOND_THRESHOLD:
                     # Flash the lights YELLOW
-                    flash_all(2, 0.25, YELLOW)
+                    flash_all(5, 0.25, YELLOW)
                     # set the activity light to YELLOw as an indicator
                     set_activity_light(YELLOW, False)
                 # hmmm, less than 2 minutes, almost time to start!
                 else:
                     # swirl the lights. Longer every second closer to start time
-                    do_swirl(int((4 - num_minutes) * 100))
+                    for x in range(0,5):
+                        do_swirl(int(5 * 100))
+                        time.sleep(5)
                     # set the activity light to SUCCESS_COLOR (green by default)
                     set_activity_light(ORANGE, False)
         # wait a second then check again
@@ -420,11 +436,12 @@ flash_all(1, 1, GREEN)
 try:
     # Initialize the Google Calendar API stuff
     print('Initializing the Google Calendar API')
-    socket.setdefaulttimeout(10)  # 10 seconds
+#    socket.setdefaulttimeout(60)  # 10 seconds
 
     service = init()
 
 except Exception as e:
+    print(e)
     print('\nException type:', type(e))
     # not much else we can do here except to skip this attempt and try again later
     print('Error:', sys.exc_info()[0])

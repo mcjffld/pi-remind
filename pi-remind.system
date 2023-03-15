@@ -1,0 +1,13 @@
+[Unit]
+Description=Pi Remind Service
+After=multi-user.target
+Requires=network.target
+
+[Service]
+Type=idle
+User=root
+ExecStart=/usr/bin/python3 /home/mjames/pi-remind/remind.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
